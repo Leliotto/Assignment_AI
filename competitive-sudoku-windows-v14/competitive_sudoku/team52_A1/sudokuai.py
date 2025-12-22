@@ -8,6 +8,7 @@ from competitive_sudoku.sudoku import GameState, Move, SudokuBoard, TabooMove
 import competitive_sudoku.sudokuai
 from collections import defaultdict
 from typing import List, Tuple, Dict
+import copy
 
 def createLookups(board: SudokuBoard) -> Tuple[
     Dict[Tuple[int, int], List[Tuple[int, int]]],
@@ -78,11 +79,12 @@ def calculateScore(game_state: GameState, move : Move,
     sum2 = 0
     sum3 = 0 
 
-    # row check
+    # row and column check
+    row_idx, col_idx = move.square
     for i in range(0, len(board.squares)):
-        if i // N == move.square[0] // N:
+        if i // N == row_idx:
             sum1 += board.squares[i]
-        if i % N == move.square[1] % N:
+        if i % N == col_idx:
             sum2 += board.squares[i] 
 
     if sum1 == goal:
@@ -137,47 +139,130 @@ def scoreDifference(score: Tuple[int,int], player: int):
         return score[1] - score[0]
 
 
+def generate_legal_moves(game_state: GameState) -> List[Move]:
+    """
+    All non-taboo, Sudoku-legal moves for the current player in the given game state.
+    """
+    board = game_state.board
+    N = board.N
+    allowed = game_state.player_squares()
+    box_h, box_w = board.region_height(), board.region_width()
 
+    def square_allowed(square):
+        return allowed is None or square in allowed
+
+    def is_legal(square, value):
+        r, c = square
+        # row/col check
+        for j in range(N):
+            if board.get((r, j)) == value:
+                return False
+        for i in range(N):
+            if board.get((i, c)) == value:
+                return False
+        # box check
+        r0 = (r // box_h) * box_h
+        c0 = (c // box_w) * box_w
+        for rr in range(r0, r0 + box_h):
+            for cc in range(c0, c0 + box_w):
+                if board.get((rr, cc)) == value:
+                    return False
+        return True
+
+    moves = []
+    for i in range(N):
+        for j in range(N):
+            square = (i, j)
+            if board.get(square) != SudokuBoard.empty:
+                continue
+            if not square_allowed(square):
+                continue
+            for value in range(1, N + 1):
+                if TabooMove(square, value) in game_state.taboo_moves:
+                    continue
+                if not is_legal(square, value):
+                    continue
+                moves.append(Move(square, value))
+    return moves
+
+
+def apply_move(game_state: GameState, move: Move) -> GameState:
+    child = copy.deepcopy(game_state)  # work on a fresh copy so caller stays unchanged
+
+    # calculateScore writes the value to the board and updates the score
+    look1, look2 = createLookups(child.board)  # reuse one set per board size if you cache it
+    child.scores = calculateScore(child, move, look1, look2)
+
+    # keep history/occupancy up to date
+    child.moves.append(move)
+    if child.occupied_squares1 is not None:
+        (child.occupied_squares1 if game_state.current_player == 1 else child.occupied_squares2).append(move.square)
+
+    # pass the turn to the other player
+    child.current_player = 2 if game_state.current_player == 1 else 1
+    return child
+
+
+def alphabeta(game_state: GameState,
+              depth: int,
+              alpha: float,
+              beta: float,
+              maximizing: bool,
+              root_player: int
+             ) -> Tuple[float, Move | None]:
+    """
+    Alpha-beta search that evaluates with scoreDifference for the root player.
+    """
+    legal_moves = generate_legal_moves(game_state)
+    if depth == 0 or not legal_moves:
+        return scoreDifference(game_state.scores, root_player), None
+
+    best_move = None
+    if maximizing:
+        value = float('-inf')
+        for move in legal_moves:
+            child = apply_move(game_state, move)
+            child_value, _ = alphabeta(child, depth - 1, alpha, beta, False, root_player)
+            if child_value > value:
+                value, best_move = child_value, move
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+    else:
+        value = float('inf')
+        for move in legal_moves:
+            child = apply_move(game_state, move)
+            child_value, _ = alphabeta(child, depth - 1, alpha, beta, True, root_player)
+            if child_value < value:
+                value, best_move = child_value, move
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+    return value, best_move
+
+
+import competitive_sudoku.sudokuai
+from competitive_sudoku.sudoku import GameState 
 
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
-    """
-    Sudoku AI that computes a move for a given sudoku configuration.
-    """
-
-    def __init__(self):
-        super().__init__()
-
+    """Sudoku AI that computes a move for a given sudoku configuration."""
     
+    def __init__(self):
+        self.best_move: List[int] = [0, 0, 0]
+        self.lock = None
+        self.player_number = -1
 
-    # N.B. This is a very naive implementation.
     def compute_best_move(self, game_state: GameState) -> None:
-        N = game_state.board.N
+        raise NotImplementedError
 
-        # Check whether a cell is empty, a value in that cell is not taboo, and that cell is allowed
-        def possible(i, j, value):
-            return game_state.board.get((i, j)) == SudokuBoard.empty \
-                   and not TabooMove((i, j), value) in game_state.taboo_moves \
-                       and (i, j) in game_state.player_squares()
-
-        all_moves = [Move((i, j), value) for i in range(N) for j in range(N)
-                     for value in range(1, N+1) if possible(i, j, value)]
-        
-
-        look1, look2 = createLookups(game_state.board)
-        
-        # initialization, we just take fisrst move
-        best_move = (all_moves[0], 0)
-
-        for move in all_moves:
-            score_move = calculateScore(game_state, move, look1, look2)
-            score_diff = scoreDifference(score_move, game_state.current_player)
-            if score_diff > best_move[1]:
-                best_move = (move, score_diff)
-        
-        toTryMove = best_move[0]
-        self.propose_move(toTryMove)
-
-
-
+    def propose_move(self, move: Move) -> None:
+        if self.lock:
+            self.lock.acquire()
+        i, j = move.square
+        self.best_move[0] = i
+        self.best_move[1] = j
+        self.best_move[2] = move.value
+        if self.lock:
+            self.lock.release()
 
 
