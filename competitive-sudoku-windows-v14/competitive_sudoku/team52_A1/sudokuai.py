@@ -44,7 +44,7 @@ def arithmeticSum(value : int) -> int:
     @param value: the last value for this arithmetic sequence.
     @return: calculated arithmetic sum.
     """
-    return (value/2) * (2 + (value - 1))
+    return value * (value + 1) // 2 # avoid comparisons with floats
 
 
 def calculateScore(game_state: GameState, move : Move, 
@@ -240,20 +240,36 @@ def alphabeta(game_state: GameState,
                 break
     return value, best_move
 
-
-import competitive_sudoku.sudokuai
-from competitive_sudoku.sudoku import GameState 
-
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     """Sudoku AI that computes a move for a given sudoku configuration."""
     
     def __init__(self):
+        super().__init__()
         self.best_move: List[int] = [0, 0, 0]
         self.lock = None
         self.player_number = -1
 
     def compute_best_move(self, game_state: GameState) -> None:
-        raise NotImplementedError
+        legal_moves = generate_legal_moves(game_state)
+        if not legal_moves:
+            return
+
+        # propose something immediately
+        self.propose_move(legal_moves[0])
+
+        max_depth = 3
+        for depth in range(1, max_depth + 1):
+            _, move = alphabeta(
+                game_state,
+                depth=depth,
+                alpha=float('-inf'),
+                beta=float('inf'),
+                maximizing=True,
+                root_player=game_state.current_player,
+            )
+            if move is not None:
+                self.propose_move(move)
+
 
     def propose_move(self, move: Move) -> None:
         if self.lock:

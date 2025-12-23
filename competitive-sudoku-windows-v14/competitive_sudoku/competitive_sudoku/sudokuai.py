@@ -244,7 +244,7 @@ def alphabeta(game_state: GameState,
 import competitive_sudoku.sudokuai
 from competitive_sudoku.sudoku import GameState 
 
-class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
+class SudokuAI:
     """Sudoku AI that computes a move for a given sudoku configuration."""
     
     def __init__(self):
