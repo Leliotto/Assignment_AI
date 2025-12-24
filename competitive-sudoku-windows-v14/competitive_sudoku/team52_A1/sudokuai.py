@@ -21,12 +21,12 @@ def createLookups(board: SudokuBoard) -> Tuple[
     @return indexesToRegion:  dict mapping a square index to the coordinate of the 
                        region it belongs to.
     """
-    rows = board.region_height()
+    rows = board.region_height() 
     cols = board.region_width()
-    N = board.N
-    values = N*N
-    regionsToIndexes = defaultdict(list)
-    indexesToRegion = dict()
+    N = board.N # size of one side of the board
+    values = N*N # total number of squares on the board
+    regionsToIndexes = defaultdict(list) 
+    indexesToRegion = dict() 
 
     for index in range(0,values):
         regionRow = index // N // rows
@@ -44,7 +44,8 @@ def arithmeticSum(value : int) -> int:
     @param value: the last value for this arithmetic sequence.
     @return: calculated arithmetic sum.
     """
-    return value * (value + 1) // 2 # avoid comparisons with floats
+    return (value/2) * (2 + (value - 1)) # same as value*(value+1)//2
+## CAN BE FLOAT, PAY ATTENTION IF SOMETHING GOES WRONG
 
 
 def calculateScore(game_state: GameState, move : Move, 
@@ -124,7 +125,7 @@ def calculateScore(game_state: GameState, move : Move,
     else:
         return score
     
-
+# used in alphabeta to evaluate the score difference between players, the bigger the difference the better for the current player
 def scoreDifference(score: Tuple[int,int], player: int):
     """
     Calculates score differnce for given player
@@ -151,9 +152,10 @@ def generate_legal_moves(game_state: GameState) -> List[Move]:
     def square_allowed(square):
         return allowed is None or square in allowed
 
+    # check if a move is legal according to sudoku rules in row, column and box
     def is_legal(square, value):
         r, c = square
-        # row/col check
+        # row/col check if move is legal
         for j in range(N):
             if board.get((r, j)) == value:
                 return False
@@ -169,6 +171,7 @@ def generate_legal_moves(game_state: GameState) -> List[Move]:
                     return False
         return True
 
+    # get all the legal moves inside a list
     moves = []
     for i in range(N):
         for j in range(N):
@@ -182,16 +185,16 @@ def generate_legal_moves(game_state: GameState) -> List[Move]:
                     continue
                 if not is_legal(square, value):
                     continue
-                moves.append(Move(square, value))
+                moves.append(Move(square, value)) # append if all checks are passed
     return moves
 
-
+# what the board looks like after making a move so we can explore it in alphabeta
 def apply_move(game_state: GameState, move: Move) -> GameState:
-    child = copy.deepcopy(game_state)  # work on a fresh copy so caller stays unchanged
+    child = copy.deepcopy(game_state)  # work on a fresh copy so real game_state stays unchanged
 
     # calculateScore writes the value to the board and updates the score
     look1, look2 = createLookups(child.board)  # reuse one set per board size if you cache it
-    child.scores = calculateScore(child, move, look1, look2)
+    child.scores = calculateScore(child, move, look1, look2) # update score and board
 
     # keep history/occupancy up to date
     child.moves.append(move)
@@ -203,16 +206,85 @@ def apply_move(game_state: GameState, move: Move) -> GameState:
     return child
 
 
+def count_completed_regions_after_move(board: SudokuBoard, move: Move) -> int:
+    """
+    Returns how many regions (row/column/block) would be completed by this move.
+    Assumes the move is legal, the legality of the move is checked after.
+    """
+    N = board.N
+    r, c = move.square
+
+    # Checks if the row would be complete
+    row_complete = True
+    for j in range(N):
+        if j == c:
+            continue
+        if board.get((r, j)) == SudokuBoard.empty:
+            row_complete = False
+            break
+    
+    # Checks if the column would be complete
+    col_complete = True
+    for i in range(N):
+        if i == r:
+            continue
+        if board.get((i, c)) == SudokuBoard.empty:
+            col_complete = False
+            break
+
+    # Checks if the block would be complete
+    box_h, box_w = board.region_height(), board.region_width()
+    r0 = (r // box_h) * box_h
+    c0 = (c // box_w) * box_w
+    block_complete = True
+    for i in range(r0, r0 + box_h):
+        for j in range(c0, c0 + box_w):
+            if i == r and j == c: # Assume my move completes the box, so skip my square
+                continue
+            if board.get((i, j)) == SudokuBoard.empty: # Check for empty square
+                block_complete = False
+                break
+        if not block_complete:
+            break
+
+    return int(row_complete) + int(col_complete) + int(block_complete)
+
+
+def order_moves(game_state: GameState, moves: List[Move]) -> List[Move]:
+    """
+    Orders moves by immediate points (desc), then by centrality (asc).
+    """
+    board = game_state.board
+    points_by_regions = {0: 0, 1: 1, 2: 3, 3: 7}
+    center = (board.N - 1) / 2 # central index of the board
+
+    # Sorting key: first by negative points (so higher points come first), then by centrality
+    def key(move: Move):
+        points = points_by_regions[count_completed_regions_after_move(board, move)] # get points for the move
+        r, c = move.square
+        centrality = abs(r - center) + abs(c - center)
+        return (-points, centrality) 
+    # I use negative points and positive centrality to sort correctly cause 
+    # sorted() sorts ascendingly by default
+
+    return sorted(moves, key=key) 
+
+
 def alphabeta(game_state: GameState,
               depth: int,
               alpha: float,
               beta: float,
               maximizing: bool,
-              root_player: int
+              root_player: int,
+              deadline: float
              ) -> Tuple[float, Move | None]:
     """
     Alpha-beta search that evaluates with scoreDifference for the root player.
     """
+
+    if time.perf_counter() >= deadline:
+        raise TimeoutError
+
     legal_moves = generate_legal_moves(game_state)
     if depth == 0 or not legal_moves:
         return scoreDifference(game_state.scores, root_player), None
@@ -220,24 +292,28 @@ def alphabeta(game_state: GameState,
     best_move = None
     if maximizing:
         value = float('-inf')
-        for move in legal_moves:
+        for move in order_moves(game_state, legal_moves):
             child = apply_move(game_state, move)
-            child_value, _ = alphabeta(child, depth - 1, alpha, beta, False, root_player)
+            child_value, _ = alphabeta(child, depth - 1, alpha, beta, False, root_player, deadline)
             if child_value > value:
                 value, best_move = child_value, move
             alpha = max(alpha, value)
             if alpha >= beta:
                 break
+            if time.perf_counter() >= deadline:
+                raise TimeoutError
     else:
         value = float('inf')
-        for move in legal_moves:
+        for move in order_moves(game_state, legal_moves):
             child = apply_move(game_state, move)
-            child_value, _ = alphabeta(child, depth - 1, alpha, beta, True, root_player)
+            child_value, _ = alphabeta(child, depth - 1, alpha, beta, True, root_player, deadline)
             if child_value < value:
                 value, best_move = child_value, move
             beta = min(beta, value)
             if alpha >= beta:
                 break
+            if time.perf_counter() >= deadline:
+                raise TimeoutError
     return value, best_move
 
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
@@ -248,6 +324,8 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         self.best_move: List[int] = [0, 0, 0]
         self.lock = None
         self.player_number = -1
+        self.time_limit = 0.5 # seconds per move 
+        self.deadline = 0.0
 
     def compute_best_move(self, game_state: GameState) -> None:
         legal_moves = generate_legal_moves(game_state)
@@ -257,18 +335,25 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         # propose something immediately
         self.propose_move(legal_moves[0])
 
-        max_depth = 3
-        for depth in range(1, max_depth + 1):
-            _, move = alphabeta(
-                game_state,
-                depth=depth,
-                alpha=float('-inf'),
-                beta=float('inf'),
-                maximizing=True,
-                root_player=game_state.current_player,
-            )
+        self.deadline = time.perf_counter() + self.time_limit # set deadline for this move
+        start_depth = 1 
+
+        while time.perf_counter() < self.deadline: # iterative deepening until we reach the deadline
+            try:
+                _, move = alphabeta(
+                    game_state,
+                    depth=start_depth,
+                    alpha=float('-inf'),
+                    beta=float('inf'),
+                    maximizing=True,
+                    root_player=game_state.current_player,
+                    deadline=self.deadline,
+                )
+            except TimeoutError:
+                break
             if move is not None:
                 self.propose_move(move)
+            start_depth += 1
 
 
     def propose_move(self, move: Move) -> None:
